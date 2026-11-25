@@ -1,7 +1,7 @@
 """Code Mode benchmark runner.
 
     python3 -m bench list
-    python3 -m bench selftest
+    python3 -m bench selftest [--tier micro|repo|all]
     python3 -m bench run [--scenarios a,b] [--models m1,m2] [--repeats 5]
     python3 -m bench run --resume results/<run-id>
     python3 -m bench report results/<run-id>
@@ -36,11 +36,17 @@ def _version(cmd):
         return "unknown"
 
 
-def selftest(names=None):
-    """Check every fixture: verification must fail before the reference solution and pass after it."""
+def tier_of(mod):
+    return mod.META.get("tier", "micro")
+
+
+def selftest(names=None, tier="micro"):
+    """Check fixtures: verification must fail before the reference solution and pass after it.
+
+    The repo tier clones real repositories and installs their dependencies, so it is opt-in."""
     ok = True
     for sid, mod in scenarios.load_all().items():
-        if names and sid not in names:
+        if (names and sid not in names) or (not names and tier != "all" and tier_of(mod) != tier):
             continue
         with tempfile.TemporaryDirectory() as tmp:
             ws, truth = Path(tmp) / "ws", Path(tmp) / "truth"
@@ -54,7 +60,7 @@ def selftest(names=None):
             files = sum(1 for p in ws.rglob("*") if p.is_file())
         good = (not before["passed"]) and after["passed"]
         ok = ok and good
-        print(f"{'ok  ' if good else 'FAIL'} {sid:<18} files={files:<4} unsolved passed={before['passed']} solved passed={after['passed']}")
+        print(f"{'ok  ' if good else 'FAIL'} {sid:<26} files={files:<4} unsolved passed={before['passed']} solved passed={after['passed']}")
         if not good:
             print("     before:", before["detail"][-300:], "\n     after:", after["detail"][-300:])
     return ok
@@ -107,6 +113,9 @@ def execute(task, cfg, mods, log):
     ws.mkdir(parents=True)
     mod.setup(ws, truth)
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=ws, check=True)
+    if mod.META.get("git_exclude"):  # installed dependencies stay out of the fixture commit and the patch
+        (ws / ".git" / "info").mkdir(exist_ok=True)
+        (ws / ".git" / "info" / "exclude").write_text(mod.META["git_exclude"])
     subprocess.run([*GIT, "add", "-A"], cwd=ws, check=True)
     subprocess.run([*GIT, "commit", "-q", "-m", "Fixture"], cwd=ws, check=True)
 
@@ -159,7 +168,7 @@ def cmd_run(args):
         manifest = json.loads((out / "manifest.json").read_text())
         plan = manifest["plan"]
     else:
-        ids = args.scenarios.split(",") if args.scenarios else list(mods)
+        ids = args.scenarios.split(",") if args.scenarios else [s for s, m in mods.items() if args.tier in ("all", tier_of(m))]
         unknown = [s for s in ids if s not in mods]
         if unknown:
             sys.exit(f"unknown scenario(s): {unknown}; see `python3 -m bench list`")
@@ -232,8 +241,11 @@ def main():
     sub.add_parser("list", help="list scenarios")
     st = sub.add_parser("selftest", help="check fixtures and verifiers locally (no API usage)")
     st.add_argument("--scenarios")
+    st.add_argument("--tier", choices=["micro", "repo", "all"], default="micro",
+                    help="repo clones real repositories and installs their dependencies (network, a few minutes)")
     run = sub.add_parser("run", help="run the benchmark")
     run.add_argument("--scenarios", help="comma-separated scenario ids (default: all)")
+    run.add_argument("--tier", choices=["micro", "repo", "all"], default="all", help="which scenarios to run when --scenarios is not given")
     run.add_argument("--models", default=DEFAULT_MODELS)
     run.add_argument("--arms", default=",".join(ARMS))
     run.add_argument("--repeats", type=int, default=5)
@@ -253,9 +265,9 @@ def main():
     args = parser.parse_args()
     if args.cmd == "list":
         for sid, mod in scenarios.load_all().items():
-            print(f"{sid:<18} {mod.META['category']:<22} {mod.META['title']}")
+            print(f"{sid:<26} {tier_of(mod):<6} {mod.META['category']:<22} {mod.META['title']}")
     elif args.cmd == "selftest":
-        sys.exit(0 if selftest(args.scenarios.split(",") if args.scenarios else None) else 1)
+        sys.exit(0 if selftest(args.scenarios.split(",") if args.scenarios else None, args.tier) else 1)
     elif args.cmd == "run":
         cmd_run(args)
     else:
