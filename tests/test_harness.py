@@ -8,7 +8,7 @@ from unittest import mock
 
 import scenarios
 from bench import __main__ as cli
-from bench import mcp_server, report, transcript
+from bench import driver, mcp_server, report, transcript
 from scenarios import _repo
 
 PRICING = transcript.load_pricing()
@@ -90,6 +90,63 @@ class PlanTests(unittest.TestCase):
             self.assertEqual((first["scenario"], first["model"], first["repeat"]), (second["scenario"], second["model"], second["repeat"]))
             self.assertNotEqual(first["arm"], second["arm"])
         self.assertEqual({t["arm"] for t in plan[::2]}, {"baseline", "codemode"})  # both arms get to go first
+
+
+    def test_resume_retries_invalid_sessions_only(self):
+        plan = cli.build_plan(["a"], ["m"], 2, ["baseline", "codemode"], seed=1)
+        keys = [t["run_key"] for t in plan]
+        records = [{"run_key": keys[0], "valid": True}, {"run_key": keys[1], "valid": False}]
+        todo, retries = cli.pending(plan, records)
+        self.assertEqual([t["run_key"] for t in todo], keys[1:])  # plan order is kept
+        self.assertEqual(retries, 1)
+        self.assertEqual(cli.pending(plan, [{"run_key": k, "valid": True} for k in keys]), ([], 0))
+
+
+class FakeMenu:
+    """A two-option menu standing in for tmux: tracks the cursor and what Enter confirmed."""
+    OPTIONS = ["No, exit", "Yes, I trust this folder"]
+
+    def __init__(self, dropped_keys=0, blank_reads=0):
+        self.cursor, self.dropped, self.blank, self.confirmed = 0, dropped_keys, blank_reads, None
+
+    def screen(self, name):
+        if self.blank > 0:  # the menu has not finished drawing
+            self.blank -= 1
+            return " Accessing workspace:\n"
+        return "\n".join(f" {'❯' if i == self.cursor else ' '} {opt}" for i, opt in enumerate(self.OPTIONS)) + "\n"
+
+    def tmux(self, *args):
+        key = args[-1]
+        if self.dropped > 0:  # the terminal is not reading input yet
+            self.dropped -= 1
+        elif key == "Enter":
+            self.confirmed = self.OPTIONS[self.cursor]
+        else:
+            self.cursor = max(0, min(len(self.OPTIONS) - 1, self.cursor + (1 if key == "Down" else -1)))
+
+
+class DriverTests(unittest.TestCase):
+    def choose(self, menu, option=driver.TRUST_OPTION):
+        with mock.patch.object(driver, "screen", menu.screen), mock.patch.object(driver, "tmux", menu.tmux):
+            return driver.choose("session", option, settle_s=0)
+
+    def test_choose_moves_the_cursor_then_confirms(self):
+        menu = FakeMenu()
+        self.assertTrue(self.choose(menu))
+        self.assertEqual(menu.confirmed, driver.TRUST_OPTION)
+
+    def test_choose_survives_a_dropped_key_and_a_half_drawn_menu(self):
+        for menu in (FakeMenu(dropped_keys=1), FakeMenu(blank_reads=2), FakeMenu(dropped_keys=2, blank_reads=1)):
+            self.assertTrue(self.choose(menu))
+            self.assertEqual(menu.confirmed, driver.TRUST_OPTION)
+
+    def test_choose_never_confirms_the_wrong_option(self):
+        for menu in (FakeMenu(dropped_keys=99), FakeMenu(blank_reads=99)):
+            self.assertFalse(self.choose(menu))
+            self.assertIsNone(menu.confirmed)
+        menu = FakeMenu()
+        self.assertFalse(self.choose(menu, option="Not on screen"))
+        self.assertIsNone(menu.confirmed)
 
 
 class ReportTests(unittest.TestCase):

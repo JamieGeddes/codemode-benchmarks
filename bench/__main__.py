@@ -161,6 +161,19 @@ def execute(task, cfg, mods, log):
     return record
 
 
+def pending(plan, records):
+    """Planned sessions still to run: those never recorded, and those whose latest record is invalid.
+
+    An invalid record means the harness could not get a usable session (it exited early, timed out or
+    ran in the wrong arm), so the session is run again; its new record replaces the old one.
+    Returns (todo, number of todo that are retries).
+    """
+    valid = {r["run_key"] for r in records if r.get("valid")}
+    invalid = {r["run_key"] for r in records if not r.get("valid")}
+    todo = [t for t in plan if t["run_key"] not in valid]
+    return todo, sum(t["run_key"] in invalid for t in todo)
+
+
 def cmd_run(args):
     mods = scenarios.load_all()
     if args.resume:
@@ -193,10 +206,10 @@ def cmd_run(args):
         "accept_code_mode": not args.no_accept_code_mode, "keep_workspaces": args.keep_workspaces,
         "pricing": manifest["pricing"]["models"],
     }
-    done = {r["run_key"] for r in report.load(out)}
-    todo = [t for t in plan if t["run_key"] not in done]
+    todo, retry = pending(plan, report.load(out))
     spent = sum(r.get("cost_usd") or 0 for r in report.load(out))
-    print(f"results: {out}\n{len(todo)} session(s) to run, {len(done)} already recorded")
+    note = f" ({retry} invalid, to be retried)" if retry else ""
+    print(f"results: {out}\n{len(todo)} session(s) to run{note}, {len(plan) - len(todo)} already recorded")
     lock, halt = threading.Lock(), threading.Event()
 
     def work(task):
