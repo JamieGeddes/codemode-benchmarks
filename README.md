@@ -43,7 +43,7 @@ python3 -m bench run --max-cost-usd 400
 
 python3 -m bench run --tier repo --repeats 3   # only the real-repository scenarios (or --tier micro)
 
-python3 -m bench run --resume results/<run-id>   # continue after an interruption or usage limit
+python3 -m bench run --resume results/<run-id>   # continue after an interruption or usage limit; retries invalid sessions
 python3 -m bench report results/<run-id>         # rebuild the report
 ```
 
@@ -140,7 +140,7 @@ Each scenario is one file in `scenarios/` with `PROMPT`, `setup()`, `verify()` a
   so prompt-cache state and time-of-day drift affect both alike.
 - Every run is verified automatically; a cheaper run that fails the task is reported as a failure.
 - Each record is checked to confirm the session really ran in the intended mode. Harness faults are
-  marked invalid, excluded from medians and listed in the report.
+  marked invalid, excluded from medians, listed in the report and run again by `--resume`.
 - The report shows medians, and marks a difference with `~` when the two arms' min-max ranges overlap.
 
 ## What is captured

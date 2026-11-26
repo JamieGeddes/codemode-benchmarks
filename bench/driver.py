@@ -38,18 +38,26 @@ def alive(name):
     return tmux("has-session", "-t", name).returncode == 0
 
 
-def choose(name, text, option):
-    """Move the ❯ cursor of an on-screen menu to `option` and confirm."""
-    lines = [ln.strip() for ln in text.splitlines()]
-    target = next((i for i, ln in enumerate(lines) if option in ln), None)
-    if target is None:
-        return
-    cursors = [i for i, ln in enumerate(lines) if ln.startswith("❯") and abs(i - target) <= 4]
-    steps = target - min(cursors, key=lambda i: abs(i - target)) if cursors else 0
-    for _ in range(abs(steps)):
-        tmux("send-keys", "-t", name, "Down" if steps > 0 else "Up")
-        time.sleep(0.15)
-    tmux("send-keys", "-t", name, "Enter")
+def choose(name, option, attempts=8, settle_s=0.3):
+    """Move the ❯ cursor of an on-screen menu to `option` and confirm. Returns True once confirmed.
+
+    The screen is re-read after every key press and Enter is only sent once the cursor is seen on
+    `option`. A key sent while the menu is still being drawn can be dropped, and confirming blind
+    would then pick whatever the menu defaults to. If the cursor never gets there, nothing is
+    confirmed and the caller tries again on a later poll.
+    """
+    for _ in range(attempts):
+        lines = [ln.strip() for ln in screen(name).splitlines()]
+        target = next((i for i, ln in enumerate(lines) if option in ln), None)
+        cursors = [i for i, ln in enumerate(lines) if ln.startswith("❯") and abs(i - target) <= 4] if target is not None else []
+        if cursors:
+            steps = target - min(cursors, key=lambda i: abs(i - target))
+            if steps == 0:
+                tmux("send-keys", "-t", name, "Enter")
+                return True
+            tmux("send-keys", "-t", name, "Down" if steps > 0 else "Up")
+        time.sleep(settle_s)  # let the menu finish drawing or the cursor move
+    return False
 
 
 def prepare(run_dir, workspace, prompt, arm, model, mcp_servers, permission_mode="dontAsk", effort=None):
@@ -107,7 +115,8 @@ def run_session(run_dir, arm, timeout_s, accept_code_mode=True, log=lambda msg: 
                 break
             if now - last_key > 3:
                 if TRUST_OPTION in text:
-                    choose(name, text, TRUST_OPTION)
+                    if not choose(name, TRUST_OPTION):
+                        log("could not select the trust option yet, retrying")
                     last_key = now
                     continue
                 if CODE_MODE_OPTION in text:
@@ -115,7 +124,8 @@ def run_session(run_dir, arm, timeout_s, accept_code_mode=True, log=lambda msg: 
                         status, detail = "code_mode_prompt", "Code Mode opt-in screen appeared"
                         break
                     log("accepting the Code Mode opt-in screen")
-                    choose(name, text, CODE_MODE_OPTION)
+                    if not choose(name, CODE_MODE_OPTION):
+                        log("could not select the Code Mode option yet, retrying")
                     last_key = now
                     continue
             if stop_file.exists():
