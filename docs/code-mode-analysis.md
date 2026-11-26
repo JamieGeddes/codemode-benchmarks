@@ -134,7 +134,7 @@ Do not choose Code Mode for speed: neither run shows a reliable wall-time gain.
 
 ## Limitations
 
-- **The user's global `CLAUDE.md` was loaded in every session.** All 132 transcripts contain `~/.claude/CLAUDE.md` as an instructions attachment, despite `--setting-sources project,local`. Its workflow rules (feature branch, full test suite, commit, push, open a PR) were followed in both arms, so the comparison between arms is still like for like, but the absolute figures include that extra work and the README's isolation claim does not hold. The harness should be fixed before further runs.
+- **The user's global `CLAUDE.md` was loaded in every session.** All 132 transcripts contain `~/.claude/CLAUDE.md` as an instructions attachment, despite `--setting-sources project,local`. Its workflow rules (feature branch, full test suite, commit, push, open a PR) were followed in both arms, so the comparison between arms is still like for like, but the absolute figures include that extra work and the README's isolation claim does not hold. The harness was fixed after these runs, so later runs are not comparable in absolute terms with the two analysed here.
 - **Quality is untested.** Both arms passed 100% of runs on both models, so the suite cannot detect a quality gap in either direction. Scenarios where the baseline sometimes fails are needed.
 - **Micro tier not run.** Fan-out, MCP-heavy and large-output patterns are where batching should matter most, and the controls are where overhead should show.
 - **Haiku is unverified.** The single-repeat Haiku 5.5 pilot had `flask_ipv6_host` at +5% cost and +24% wall time under Code Mode.

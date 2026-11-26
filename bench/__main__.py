@@ -139,6 +139,7 @@ def execute(task, cfg, mods, log):
         verdict = {"passed": False, "score": 0.0, "detail": f"verifier error: {err!r}"}
 
     arm_ok, arm_reason = transcript.arm_check(task["arm"], summary, outcome["banner_seen"])
+    isolated, isolation_reason = transcript.isolation_check(summary, ws)
     reason = ""
     if outcome["status"] not in ("completed", "timeout"):
         reason = f"session {outcome['status']}: {outcome.get('detail', '')[-300:]}"
@@ -146,6 +147,8 @@ def execute(task, cfg, mods, log):
         reason = "no API requests found in the transcript"
     elif not arm_ok:
         reason = arm_reason
+    elif not isolated:
+        reason = isolation_reason
     stop = outcome.get("stop") or {}
     record = {
         **task, "run_id": cfg["run_id"], "category": mod.META["category"], "session_id": session_id, "started_at": started,

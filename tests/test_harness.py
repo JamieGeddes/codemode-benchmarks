@@ -80,6 +80,36 @@ class TranscriptTests(unittest.TestCase):
         self.assertTrue(transcript.arm_check("codemode", {"tool_calls": {}, "repl_mode_row": True}, False)[0])
 
 
+class IsolationTests(unittest.TestCase):
+    def test_instruction_files_are_recorded_and_outside_ones_fail_the_check(self):
+        with tempfile.TemporaryDirectory() as ws:
+            inside, outside = str(Path(ws) / "CLAUDE.md"), str(Path.home() / ".claude" / "CLAUDE.md")
+            row = lambda *paths: {"type": "attachment", "attachment": {"type": "instructions", "files": [{"path": p} for p in paths]}}
+            clean = transcript.parse_session([write_jsonl([row(inside), {"type": "attachment", "attachment": {"type": "date"}}])], PRICING)
+            self.assertEqual(clean["instruction_files"], [inside])
+            self.assertEqual(transcript.isolation_check(clean, ws), (True, ""))
+            leaked = transcript.parse_session([write_jsonl([row(inside, outside)])], PRICING)
+            ok, reason = transcript.isolation_check(leaked, ws)
+            self.assertFalse(ok)
+            self.assertIn(outside, reason)
+            self.assertNotIn(inside, reason)
+            self.assertEqual(transcript.isolation_check({}, ws), (True, ""))  # records made before this check existed
+
+    def test_sessions_exclude_every_instruction_file_above_the_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path.home() / ".cache" / "codemode-bench" / "run" / "task"
+            globs = driver.outside_instruction_globs(ws)
+            home = Path.home().as_posix()
+            for wanted in (f"{home}/.claude/CLAUDE.md", f"{home}/CLAUDE.md", f"{home}/.claude/rules/**",
+                           f"{home}/.cache/CLAUDE.md", f"{ws.parent.as_posix()}/CLAUDE.local.md"):
+                self.assertIn(wanted, globs)
+            self.assertFalse([g for g in globs if g.startswith(ws.as_posix() + "/")])  # a fixture's own files still load
+            driver.prepare(tmp, ws, "prompt", "baseline", "m", {})
+            settings = json.loads((Path(tmp) / "settings.json").read_text())
+            self.assertEqual(settings["claudeMdExcludes"], globs)
+            self.assertIn("Stop", settings["hooks"])
+
+
 class PlanTests(unittest.TestCase):
     def test_plan_is_balanced_paired_and_reproducible(self):
         plan = cli.build_plan(["a", "b", "c"], ["m1", "m2"], 3, ["baseline", "codemode"], seed=7)

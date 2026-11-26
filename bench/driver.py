@@ -5,6 +5,7 @@ a detached tmux session on a private socket, the prompt passed on the command li
 hook that writes a marker file when Claude finishes its turn.
 """
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -60,6 +61,23 @@ def choose(name, option, attempts=8, settle_s=0.3):
     return False
 
 
+def outside_instruction_globs(workspace):
+    """Patterns for `claudeMdExcludes` covering every instruction file above the workspace.
+
+    Claude Code loads CLAUDE.md, CLAUDE.local.md, .claude/CLAUDE.md and .claude/rules from the working
+    directory and from every directory above it. For a workspace under the home directory that includes
+    the user's own ~/.claude/CLAUDE.md, whatever --setting-sources says. Files inside the workspace are
+    left alone, so a fixture may ship its own CLAUDE.md.
+    """
+    given = Path(os.path.abspath(workspace))
+    parents = {*given.parents, *given.resolve().parents, Path.home(), Path.home().resolve()}
+    globs = []
+    for parent in sorted(parents):
+        base = parent.as_posix().rstrip("/")
+        globs += [f"{base}/CLAUDE.md", f"{base}/CLAUDE.local.md", f"{base}/.claude/CLAUDE.md", f"{base}/.claude/rules/**"]
+    return globs
+
+
 def prepare(run_dir, workspace, prompt, arm, model, mcp_servers, permission_mode="dontAsk", effort=None):
     """Write the per-run prompt, settings, MCP config and launch script. Returns the session id."""
     run_dir = Path(run_dir)
@@ -69,6 +87,7 @@ def prepare(run_dir, workspace, prompt, arm, model, mcp_servers, permission_mode
     settings = {
         "hooks": {"Stop": [{"hooks": [{"type": "command", "command": f"cat > {shlex.quote(str(stop_file))}"}]}]},
         "permissions": {"allow": ALLOWED_TOOLS},
+        "claudeMdExcludes": outside_instruction_globs(workspace),
     }
     (run_dir / "settings.json").write_text(json.dumps(settings, indent=2))
     (run_dir / "mcp.json").write_text(json.dumps({"mcpServers": mcp_servers}, indent=2))
