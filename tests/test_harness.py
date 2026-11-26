@@ -1,11 +1,15 @@
 """Harness tests. No API usage: `python3 -m unittest discover -s tests -t .`"""
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import scenarios
 from bench import __main__ as cli
 from bench import mcp_server, report, transcript
+from scenarios import _repo
 
 PRICING = transcript.load_pricing()
 
@@ -149,7 +153,69 @@ class McpServerTests(unittest.TestCase):
 
 class FixtureTests(unittest.TestCase):
     def test_every_fixture_fails_unsolved_and_passes_solved(self):
-        self.assertTrue(cli.selftest())
+        self.assertTrue(cli.selftest())  # micro tier only; the repo tier needs the network
+
+
+class RepoTierTests(unittest.TestCase):
+    """Exercise the repo-tier machinery offline against a throwaway local repository."""
+
+    def git(self, *args):
+        subprocess.run(["git", "-C", str(self.upstream), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                        "-c", "commit.gpgsign=false", *args], check=True, capture_output=True)
+
+    def commit(self, files, message):
+        for rel, text in files.items():
+            path = self.upstream / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+        return subprocess.run(["git", "-C", str(self.upstream), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+    def test_fixture_removes_the_fix_and_verify_restores_the_tests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            self.upstream = tmp / "upstream"
+            self.upstream.mkdir()
+            self.git("init", "-q", "-b", "main")
+            test = "const test = require('node:test');\nconst assert = require('node:assert');\nconst { add } = require('../lib/add');\n"
+            self.commit({"lib/add.js": "exports.add = (a, b) => a - b;\n", "CHANGES.md": "# Changes\n", ".mcp.json": "{}\n",
+                         "test/add.test.js": test + "test('loads', () => { assert.ok(add); });\n"}, "Initial")
+            fix = self.commit({"lib/add.js": "exports.add = (a, b) => a + b;\n", "CHANGES.md": "# Changes\n- fix add\n",
+                               "test/add.test.js": test + "test('adds', () => { assert.strictEqual(add(2, 3), 5); });\n"}, "Fix add")
+            pin = self.commit({"lib/other.js": "exports.other = 1;\n"}, "Later work")
+            spec = {"url": str(self.upstream), "licence": "MIT", "kind": "node", "pin": pin, "install": ["true"],
+                    "test": ["node", "--test"], "test_re": r"^test/", "env_note": "Nothing to install."}
+            with mock.patch.dict(_repo.REPOS, {"local": spec}), mock.patch.object(_repo, "CACHE", tmp / "cache"):
+                meta, prompt, setup, solve, verify = _repo.task(
+                    id="local_fix", title="t", repo="local", fix=fix, category="repo: bug fix", hypothesis="h",
+                    run=["test/add.test.js"], prompt="Fix add.")
+                ws = tmp / "ws"
+                ws.mkdir()
+                setup(ws, tmp)
+                self.assertEqual((ws / "lib/add.js").read_text(), "exports.add = (a, b) => a - b;\n")
+                self.assertNotIn("fix add", (ws / "CHANGES.md").read_text())  # the changelog entry would give it away
+                self.assertNotIn("adds", (ws / "test/add.test.js").read_text())  # so would the upstream test
+                self.assertTrue((ws / "lib/other.js").exists())  # later upstream work is kept
+                self.assertFalse((ws / ".mcp.json").exists())
+                self.assertFalse((ws / ".git").exists())
+                (ws / "test/add.test.js").write_text("")  # an emptied test file must not make verification pass
+                self.assertFalse(verify(ws, tmp)["passed"])
+                setup(ws, tmp)  # a second setup starts again from a clean tree
+                solve(ws, tmp)
+                self.assertTrue(verify(ws, tmp)["passed"])
+            self.assertEqual(meta["tier"], "repo")
+            self.assertTrue(prompt.endswith("Nothing to install."))
+
+    def test_repo_scenarios_are_well_formed_and_opt_in(self):
+        mods = {sid: m for sid, m in scenarios.load_all().items() if cli.tier_of(m) == "repo"}
+        self.assertGreaterEqual(len(mods), 10)
+        for sid, mod in mods.items():
+            self.assertRegex(mod.META["repo"], r"^https://github\.com/\S+ @ [0-9a-f]{10} \((MIT|BSD-3-Clause)\), fix [0-9a-f]{10}$", sid)
+            self.assertIn("node_modules/", mod.META["git_exclude"])
+            self.assertNotRegex(mod.PROMPT, r"\b(src|lib|tests?)/\S+\.(ts|tsx|js|py)\b", f"{sid}: the prompt should not name files")
+        for spec in _repo.REPOS.values():
+            self.assertRegex(spec.get("pin", "0" * 40), r"^[0-9a-f]{40}$")
 
 
 if __name__ == "__main__":
