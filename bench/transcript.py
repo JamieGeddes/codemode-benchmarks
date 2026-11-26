@@ -1,5 +1,6 @@
 """Extract tokens, cost, requests and tool calls from Claude Code session transcripts (JSONL)."""
 import json
+import os
 from collections import Counter
 from pathlib import Path
 
@@ -62,7 +63,7 @@ def parse_session(paths, pricing=None):
     pricing = load_pricing() if pricing is None else pricing
     messages = {}  # API message id -> (model, usage, is_sidechain); streamed blocks repeat the same usage
     tool_ids, tools, inner_tools = set(), Counter(), Counter()
-    cost_state, repl_mode, timestamps, efforts, versions = None, False, [], set(), set()
+    cost_state, repl_mode, timestamps, efforts, versions, instructions = None, False, [], set(), set(), set()
     for path in paths:
         for row in _rows(path):
             kind = row.get("type")
@@ -72,6 +73,10 @@ def parse_session(paths, pricing=None):
                 versions.add(row["version"])
             if kind == "cost-state":
                 cost_state = row
+            elif kind == "attachment":
+                att = row.get("attachment") or {}
+                if att.get("type") == "instructions":  # CLAUDE.md and rules files given to the model
+                    instructions.update(str(f.get("path")) for f in att.get("files") or [] if isinstance(f, dict))
             elif kind == "repl-mode":
                 repl_mode = repl_mode or row.get("replMode") is True
             elif kind == "assistant":
@@ -134,6 +139,7 @@ def parse_session(paths, pricing=None):
         "tool_duration_s": (cost_state or {}).get("totalToolDuration", 0) / 1000 if cost_state else None,
         "first_timestamp": min(timestamps) if timestamps else None,
         "last_timestamp": max(timestamps) if timestamps else None,
+        "instruction_files": sorted(instructions),
         "effort": sorted(efforts),
         "claude_code_version": sorted(versions),
     }
@@ -151,4 +157,19 @@ def arm_check(arm, summary, banner_seen):
         return True, ""
     if used_code or banner_seen or summary["repl_mode_row"]:
         return False, "Code Mode was active in a baseline run"
+    return True, ""
+
+
+def isolation_check(summary, workspace):
+    """Confirm the session was given no instruction files from outside its workspace. Returns (ok, reason).
+
+    Claude Code loads CLAUDE.md files from every directory above the working directory, so a workspace
+    under the home directory picks up the user's own ~/.claude/CLAUDE.md. Personal instructions change
+    what the model does in both arms, so such a session does not measure the scenario as written.
+    """
+    root = os.path.realpath(workspace)
+    outside = [p for p in summary.get("instruction_files") or []
+               if os.path.commonpath([root, os.path.realpath(p)]) != root]
+    if outside:
+        return False, f"instruction files from outside the workspace were loaded: {', '.join(outside)}"
     return True, ""

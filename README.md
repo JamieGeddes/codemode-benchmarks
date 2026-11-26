@@ -134,8 +134,14 @@ Each scenario is one file in `scenarios/` with `PROMPT`, `setup()`, `verify()` a
 
 - Identical prompt, fixture, model, permission mode, settings and harness for both arms. Prompts
   describe the goal only and never suggest a method.
-- Sessions ignore your personal configuration (`--setting-sources project,local`,
-  `--strict-mcp-config`), so your CLAUDE.md, plugins, hooks and MCP servers cannot skew either arm.
+- Sessions ignore your personal settings and hooks (`--setting-sources project,local`) and your
+  configured MCP servers (`--strict-mcp-config`).
+- Sessions ignore your personal instructions. Claude Code loads `CLAUDE.md` files from every directory
+  above the working directory, which for a workspace under your home directory includes
+  `~/.claude/CLAUDE.md`. The runner excludes every instruction file above the workspace
+  (`claudeMdExcludes`), and marks a session invalid if one is loaded anyway.
+- Not isolated: tools that Claude Code or your account adds by itself, such as the Chrome extension
+  and connectors, are still offered in both arms.
 - Run order is randomised per repeat, and the two arms of a scenario run back to back in random order,
   so prompt-cache state and time-of-day drift affect both alike.
 - Every run is verified automatically; a cheaper run that fails the task is reported as a failure.
